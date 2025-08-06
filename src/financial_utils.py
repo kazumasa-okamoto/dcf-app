@@ -49,6 +49,7 @@ def reconstruct_balance_sheet(balance_sheet_data):
             "common_stock": year_data.get("commonStock"),
             "retained_earnings": year_data.get("retainedEarnings"),
             "aoci" :year_data.get("accumulatedOtherComprehensiveIncomeLoss"),
+            "capital_surplus": 0.0,
             "total_equity": year_data.get("totalStockholdersEquity"),
         }
         bs_list.append(bs)

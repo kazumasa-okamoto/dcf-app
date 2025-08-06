@@ -4,6 +4,16 @@ import streamlit as st
 FMP_API_KEY = st.secrets["FMP_API_KEY"] 
 BASE_URL = "https://financialmodelingprep.com/api/v3"
 
+def search_ticker_by_name(company_name):
+    url = f"https://financialmodelingprep.com/api/v3/search"
+    params = {
+        "query": company_name,
+        "limit": 5,
+        "apikey": FMP_API_KEY
+    }
+    response = requests.get(url, params=params)
+    return response.json()
+
 
 def fetch_income_statement(ticker, limit=10):
     url = f"{BASE_URL}/income-statement/{ticker}?limit={limit}&apikey={FMP_API_KEY}"
