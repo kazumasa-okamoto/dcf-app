@@ -80,7 +80,8 @@ def forecast_pl_from_growth(pl_list, growth_rates):
     return extended_pl_list
 
 
-def forecast_bs_from_pl(extended_pl_list, pl_list, bs_list, returns_list, adjust_debt=False):
+def forecast_bs_from_pl(extended_pl_list, pl_list, bs_list, returns_list, 
+                        ppe_growth_coef=None,intangible_growth_coef=None):
     """
     将来のPL予測に基づいてBS（バランスシート）を拡張する。
 
@@ -89,6 +90,8 @@ def forecast_bs_from_pl(extended_pl_list, pl_list, bs_list, returns_list, adjust
         pl_list (List[dict]): 実績ベースのPL（平均算出に用いる）
         bs_list (List[dict]): 実績ベースのBS
         returns_list (List[dict]): 各年度の配当金や自社株買い情報
+        ppe_growth_coef (float or None): PPE成長弾力性（売上成長率に対する）
+        intangible_growth_coef (float or None): 無形固定資産の弾力性（売上成長率に対する）
 
     Returns:
         List[dict]: 拡張されたBS（extend_bs_list）
@@ -98,8 +101,8 @@ def forecast_bs_from_pl(extended_pl_list, pl_list, bs_list, returns_list, adjust
     - 有価証券；一定
     - 売上債権：直近5年の売上高比の平均で一定
     - 棚卸資産：直近5年の売上高比の平均で一定
-    - 有形固定資産：直近5年の平均成長率で一定成長
-    - 無形固定資産：直近5年の平均成長率で一定成長
+    - 有形固定資産：売上高成長率 × 係数で成長
+    - 無形固定資産：売上高成長率 × 係数で成長
     - その他固定資産：一定
     - 資産合計：以上の和
     - 短期有利子負債：一定
@@ -113,12 +116,6 @@ def forecast_bs_from_pl(extended_pl_list, pl_list, bs_list, returns_list, adjust
     - 自己株式：直近5年の自社株買い比率の平均から計算
     - 資本剰余金：直近5年の配当性向の平均から計算
     - その他包括利益累計額：0と仮定
-
-     adjust_debt=True の場合:
-    - キャッシュ：過去5年の売上高比平均で維持
-    - 不足分は直近のD/E比に基づいて負債と資本で資金調達
-    - 負債の追加分は短期有利子負債に反映
-    - 自己資本の追加分は capital_surplus に反映
     """
     # 直近5年
     recent_pl = pl_list[-5:]
@@ -142,8 +139,17 @@ def forecast_bs_from_pl(extended_pl_list, pl_list, bs_list, returns_list, adjust
     accounts_payable_ratio = average_ratio(recent_bs, "accounts_payable", "revenue", recent_pl)
     other_current_liabilities_ratio = average_ratio(recent_bs, "other_current_liabilities", "revenue", recent_pl)
 
-    ppe_growth = average_growth(recent_bs, "ppe")
-    intangible_growth = average_growth(recent_bs, "intangible_assets")
+    # 実績から推定（デフォルト値として使用）
+    avg_ppe_growth = average_growth(bs_list, "ppe")
+    avg_intangible_growth = average_growth(recent_bs, "intangible_assets")
+    avg_revenue_growth = average_growth(pl_list, "revenue")
+
+    if ppe_growth_coef is None:
+        ppe_growth_coef = avg_ppe_growth / avg_revenue_growth
+
+    if intangible_growth_coef is None:
+        intangible_growth_coef = avg_intangible_growth / avg_revenue_growth
+
     dividend_ratio = average_dividend_ratio(recent_pl, returns_list)
     buyback_ratio = average_buyback_ratio(recent_pl, returns_list)
 
@@ -165,6 +171,10 @@ def forecast_bs_from_pl(extended_pl_list, pl_list, bs_list, returns_list, adjust
         revenue = pl.get("revenue", 0)
         net_income = pl.get("net_income", 0)
         prev_bs = extended_bs_list[-1]  # 直前のBS
+        prev_revenue = extended_pl_list[i - 1]["revenue"] if i > 0 else revenue
+        sales_growth_rate = (
+            (revenue - prev_revenue) / prev_revenue if prev_revenue else 0)
+
         date_obj = datetime.strptime(prev_bs["date"], "%Y-%m-%d")
         date = date_obj.replace(year=date_obj.year + 1).strftime("%Y-%m-%d")
 
@@ -173,8 +183,8 @@ def forecast_bs_from_pl(extended_pl_list, pl_list, bs_list, returns_list, adjust
         inventory = revenue * inventory_ratio
         accounts_payable = revenue * accounts_payable_ratio
         other_current_liabilities = revenue * other_current_liabilities_ratio
-        ppe = prev_bs["ppe"] * (1 + ppe_growth)
-        intangible_assets = prev_bs["intangible_assets"] * (1 + intangible_growth)
+        ppe = prev_bs["ppe"] * (1 + ppe_growth_coef * sales_growth_rate)
+        intangible_assets = prev_bs["intangible_assets"] * (1 + intangible_growth_coef * sales_growth_rate)
 
         # 純資産項目
         distributed_ratio = min(dividend_ratio + buyback_ratio, 1.0)
@@ -192,35 +202,6 @@ def forecast_bs_from_pl(extended_pl_list, pl_list, bs_list, returns_list, adjust
         )
         total_equity = common_stock + capital_surplus + retained_earnings + aoci
         cash = total_liabilities + total_equity - non_cash_assets
-        
-        # 資金調達による調整（必要時）
-        target_cash = revenue * target_cash_ratio
-        if adjust_debt and cash < target_cash:
-            funding_needed = target_cash - cash
-
-            latest_total_debt = latest_bs["short_term_debt"] + latest_bs["long_term_debt"]
-            latest_total_equity = latest_bs["total_equity"]
-            total_capital = latest_total_debt + latest_total_equity
-
-            debt_share = latest_total_debt / total_capital
-            equity_share = latest_total_equity / total_capital
-
-            additional_debt = funding_needed * debt_share
-            additional_equity = funding_needed * equity_share
-
-            short_term_debt += additional_debt
-            capital_surplus += additional_equity
-
-            # 再計算
-            total_liabilities = (
-                short_term_debt + accounts_payable + other_current_liabilities +
-                deferred_revenue + long_term_debt + other_noncurrent_liabilities
-            )
-            total_equity = common_stock + capital_surplus + retained_earnings + aoci
-            cash = target_cash
-
-        total_assets = non_cash_assets + cash
-
         total_assets = non_cash_assets + cash
 
         forecast_bs = {
@@ -272,7 +253,7 @@ def forecast_cf_from_pl_bs_nopat_nwc(extended_pl_list, extended_bs_list, extende
     - 減価償却費：PLの減価償却費
     - 正味運転資本の増減（delta_nwc）：NWCの差分
     - 営業活動によるCF：NOPAT + 減価償却費 - delta_nwc
-    - 投資活動によるCF：Δ固定資産（PPE）
+    - 投資活動によるCF：有形固定資産と無形固定資産の差分
     - FCF（フリーキャッシュフロー）：営業CF + 投資CF
     """
     extended_cf_list = []
@@ -292,12 +273,12 @@ def forecast_cf_from_pl_bs_nopat_nwc(extended_pl_list, extended_bs_list, extende
         if i > 0:
             delta_nwc = nwc_data["nwc"] - extended_nwc_list[i - 1]["nwc"]
 
-        # CapEx = ΔPPE + 減価償却費
+        # CapEx = 有形固定資産と無形固定資産の差分
         capex = 0
         if i > 0:
-            prev_ppe = extended_bs_list[i - 1].get("ppe", 0)
-            curr_ppe = bs.get("ppe", 0)
-            capex =  curr_ppe - prev_ppe
+            ppe_investment = bs["ppe"] - extended_bs_list[i - 1]["ppe"]
+            intangible_investment = bs["intangible_assets"] - extended_bs_list[i - 1]["intangible_assets"]
+            capex =  ppe_investment + intangible_investment
 
         # FCF = NOPAT + 減価償却費 - ΔNWC - CapEx
         fcf = nopat + depreciation - delta_nwc - capex

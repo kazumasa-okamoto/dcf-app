@@ -155,7 +155,7 @@ if selected_ticker:
         st.header("📈 財務諸表予測（シナリオ別）")
 
         base_growth = average_growth(pl_list, "revenue") 
-        scenario_growth_multipliers = [0.5, 1.0, 1.5]  # Downside / Normal / Upside
+        scenario_growth_multipliers = [0.75, 1.0, 1.25]  # Downside / Normal / Upside
         decay_factor = 0.95  # 年ごとの減衰率
 
         tabs = st.tabs(["シナリオ 1（Downside）", "シナリオ 2（Normal）", "シナリオ 3（Upside）"])
@@ -164,7 +164,16 @@ if selected_ticker:
             with tab:
                 st.markdown(f"#### シナリオ {idx + 1}: 売上高成長率（%）を10年分入力")
 
-                adjust_debt = st.checkbox("資金調達を有効にする", value=True, key=f"debt_{idx}")
+                # 係数の入力スライダー
+                ppe_growth_coef = st.slider(
+                    "🛠 PPE弾力性（売上高成長率に対する）", 
+                    min_value=0.0, max_value=2.0, value=0.3, step=0.05, key=f"ppe_coef_{idx}"
+                    )
+
+                intangible_growth_coef = st.slider(
+                    "🧠 無形固定資産弾力性（売上高成長率に対する）", 
+                    min_value=0.0, max_value=2.0, value=0.3, step=0.05, key=f"intangible_coef_{idx}"
+                )
 
                 # 年ごとに減衰させた初期値リストを生成
                 default_growth_rates = [
@@ -199,7 +208,8 @@ if selected_ticker:
 
                     extended_pl_list = forecast_pl_from_growth(pl_list, cleaned_growth_rates)
                     extended_bs_list = forecast_bs_from_pl(
-                        extended_pl_list, pl_list, bs_list, returns_list, adjust_debt=adjust_debt
+                        extended_pl_list, pl_list, bs_list, returns_list,
+                        ppe_growth_coef=ppe_growth_coef, intangible_growth_coef=intangible_growth_coef
                     )
                     extended_nopat_list = compute_nopat_from_pl(extended_pl_list)
                     extended_nwc_list = compute_nwc_from_bs(extended_bs_list)
