@@ -269,7 +269,14 @@ if selected_ticker:
                 cost_of_debt = compute_cost_of_debt_from_pl_bs(pl_list, bs_list)
                 wacc = compute_wacc(cost_of_equity, cost_of_debt, bs_list, nopat_list)
 
-                enterprise_value = compute_dcf_valuation(cf_list, wacc, growth)
+                input_wacc = st.number_input(
+                    "加重平均資本コスト（WACC, %）", 
+                    value=wacc * 100,  # 初期値を%で表示
+                    step=0.1, 
+                    key=f"wacc_{idx}"
+                ) / 100
+
+                enterprise_value = compute_dcf_valuation(cf_list, input_wacc, growth)
                 result = compute_fair_share_price_from_bs(enterprise_value, bs_list, market_data)
 
                 # 表示用に格納
@@ -278,7 +285,7 @@ if selected_ticker:
                     "enterprise_value": result["enterprise_value"],
                     "fair_share_price": result["fair_share_price"],
                     "current_market_price": result["current_market_price"],
-                    "wacc": wacc,
+                    "wacc": input_wacc,
                     "growth": growth,
                     "cf_list": cf_list
                 })
@@ -291,7 +298,7 @@ if selected_ticker:
                 with st.expander("詳細"):
                     st.write("**株主資本コスト:**", f"{cost_of_equity:.2%}")
                     st.write("**負債コスト:**", f"{cost_of_debt:.2%}")
-                    st.write("**WACC:**", f"{wacc:.2%}")
+                    st.write("**WACC:**", f"{input_wacc:.2%}")
                     st.write("**β:**", f"{market_data['beta']:.2f}")
                     st.write("**無リスク利子率:**", f"{market_data['risk_free_rate']:.2%}")
                     st.write("**市場リスクプレミアム:**", f"{market_data['market_risk_premium']:.2%}")
