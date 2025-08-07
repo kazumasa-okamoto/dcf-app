@@ -239,3 +239,4 @@ def reconstruct_market_data(profile_data, risk_free_rate, market_risk_premium):
         "market_risk_premium": market_risk_premium,
         "shares_outstanding": shares_outstanding
     }
+

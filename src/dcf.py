@@ -2,7 +2,6 @@ import numpy as np
 from numpy import linspace
 from copy import deepcopy
 
-
 def compute_dcf_valuation(cf_list, wacc, perpetual_growth_rate):
     """
     DCF法により企業価値を算出する関数。
@@ -71,13 +70,15 @@ def compute_fair_share_price_from_bs(enterprise_value, bs_list, market_data):
     net_debt = interest_bearing_debt - cash
 
     equity_value = enterprise_value - net_debt
-    fair_price = equity_value / market_data["shares_outstanding"]
+    shares_outstanding = market_data["shares_outstanding"]
+    fair_price = equity_value / shares_outstanding
     current_price = market_data.get("price", None)
 
     return {
         "enterprise_value": enterprise_value,
         "net_debt": net_debt,
         "equity_value": equity_value,
+        "shares_outstanding": shares_outstanding,
         "fair_share_price": fair_price,
         "current_market_price": current_price
     }

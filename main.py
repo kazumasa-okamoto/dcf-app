@@ -24,14 +24,14 @@ from src.financial_forcasting import(
     forecast_cf_from_pl_bs_nopat_nwc,
 )
 
-from src.compute_wacc import compute_cost_of_equity, compute_cost_of_debt_from_pl_bs, compute_wacc
+from src.compute_wacc import compute_cost_of_equity, compute_cost_of_debt_from_pl_bs, compute_wacc, infer_cost_of_debt_from_wacc
 
-from src.dcf import compute_dcf_valuation, compute_fair_share_price_from_bs, sensitivity_analysis_dcf
+from src.dcf import compute_dcf_valuation, compute_fair_share_price_from_bs
 
-from src.visualization import plot_multiple_metrics
+from src.visualization import plot_multiple_metrics, plot_dcf_comparison_charts, plot_dcf_sensitivity_heatmaps
 
 st.set_page_config(page_title="財務・DCF分析ダッシュボード", layout="wide")
-st.title("📈 財務分析＆DCF評価ダッシュボード")
+st.title("📈 財務分析＆DCF分析ダッシュボード")
 
 company_query = st.text_input("企業名またはティッカーを入力してください（例: Apple）")
 
@@ -40,14 +40,19 @@ selected_ticker = None
 if company_query:
     search_results = search_ticker_by_name(company_query)
 
-    if search_results:
+    if "search_cache" not in st.session_state or st.session_state.search_cache.get("query") != company_query:
         # 企業名とティッカーのリストを作成
+        search_results = search_ticker_by_name(company_query)
+        st.session_state.search_cache = {"query": company_query, "results": search_results}
+    else:
+        search_results = st.session_state.search_cache["results"]
+    
+    if search_results:
         display_options = [f"{item['symbol']} - {item['name']}" for item in search_results]
         selected_option = st.selectbox("検索結果から選択してください：", display_options)
-
         # ティッカーを抽出
         if selected_option:
-            selected_ticker = selected_option.split(" - ")[0]  # 例: "AAPL - Apple Inc." → "AAPL"
+            selected_ticker = selected_option.split(" - ")[0]
     else:
         st.warning("企業が見つかりませんでした。別のキーワードでお試しください。")
 
@@ -67,11 +72,16 @@ if selected_ticker:
             returns_list = extract_returns_from_cf(cf_raw)
 
             # セッションに保存
-            st.session_state.ticker_cache = ticker
-            st.session_state.pl_list = pl_list
-            st.session_state.bs_list = bs_list
-            st.session_state.returns_list = returns_list
-            st.session_state.market_data_raw = market_data_raw
+            st.session_state.update({
+                "ticker_cache": ticker,
+                "income_raw": income_raw,
+                "balance_raw": balance_raw,
+                "cf_raw": cf_raw,
+                "market_data_raw": market_data_raw,
+                "pl_list": pl_list,
+                "bs_list": bs_list,
+                "returns_list": returns_list
+            })
 
     # セッションから読み込み
     pl_list = st.session_state.pl_list
@@ -133,7 +143,7 @@ if selected_ticker:
         st.subheader("基本項目")
         plot_multiple_metrics(df_combined, ["revenue", "operating_income", "nopat"])
         print(df_combined[["revenue", "operating_income", "nopat"]].dropna(how="all"))
-        st.dataframe(df_combined[["revenue", "operating_income", "nopat"]])
+        st.dataframe(df_combined[["revenue", "operating_income", "nopat"]].T)
 
         # ROIC・利益率など
         st.subheader("収益性・効率性") 
@@ -141,7 +151,7 @@ if selected_ticker:
             df_combined,
             ["roic", "pre_tax_roic", "operating_margin", "sg_and_a_ratio"]
         )
-        st.dataframe(df_combined[["roic", "pre_tax_roic", "operating_margin", "sg_and_a_ratio"]])
+        st.dataframe(df_combined[["roic", "pre_tax_roic", "operating_margin", "sg_and_a_ratio"]].T)
 
         # 投下資本回転日数
         st.subheader("資本効率")
@@ -149,7 +159,7 @@ if selected_ticker:
             df_combined,
             ["nwc_days", "ppe_days", "intangible_days"]
         )
-        st.dataframe(df_combined[["nwc_days", "ppe_days", "intangible_days"]])
+        st.dataframe(df_combined[["nwc_days", "ppe_days", "intangible_days"]].T)
 
     with tab_forecast:
         st.header("📈 財務諸表予測（シナリオ別）")
@@ -166,13 +176,13 @@ if selected_ticker:
 
                 # 係数の入力スライダー
                 ppe_growth_coef = st.slider(
-                    "🛠 PPE弾力性（売上高成長率に対する）", 
-                    min_value=0.0, max_value=2.0, value=0.3, step=0.05, key=f"ppe_coef_{idx}"
+                    "🛠 有形固定資産弾力性（売上高成長率に対する）", 
+                    min_value=0.0, max_value=2.0, value=0.5, step=0.05, key=f"ppe_coef_{idx}"
                     )
 
                 intangible_growth_coef = st.slider(
                     "🧠 無形固定資産弾力性（売上高成長率に対する）", 
-                    min_value=0.0, max_value=2.0, value=0.3, step=0.05, key=f"intangible_coef_{idx}"
+                    min_value=0.0, max_value=2.0, value=0.5, step=0.05, key=f"intangible_coef_{idx}"
                 )
 
                 # 年ごとに減衰させた初期値リストを生成
@@ -222,11 +232,75 @@ if selected_ticker:
                     st.subheader("📄 予測PL（損益計算書）")
                     st.dataframe(to_dataframe(extended_pl_list).round(0).T)
 
+                    with st.expander("📘 損益計算書の詳細（予測ロジック）"):
+                        st.markdown("""
+                    ### 📘 予測PLの作成方法
+
+                    この損益計算書（PL）は、**売上高成長率に基づいて将来のPLを予測**し、既存のPLリストに追加したものです。
+
+                    #### 🧮 各項目の予測方法
+
+                    - **売上高**：指定された成長率に従って予測
+                    - **売上原価**：直近5年の売上高比率で一定
+                    - **販管費（SG&A）**：直近5年の売上高比率で一定
+                    - **減価償却費**：直近5年の平均成長率で一定成長
+                    - **営業利益**：上記の差額から算出
+                    - **受取利息・支払利息・その他営業外損益**：直近5年の平均値で一定
+                    - **税引前利益**：営業利益＋営業外損益
+                    - **法人税等**：直近5年の「法人税 / 税引前利益」の比率を適用
+                    - **親会社株主に属する当期純利益**：税引前利益 − 法人税等
+                    
+                        """)
+
                     st.subheader("📄 予測BS（貸借対照表）")
                     st.dataframe(to_dataframe(extended_bs_list).round(0).T)
 
+                    with st.expander("📙 貸借対照表の詳細（予測ロジック）"):
+                        st.markdown("""
+                    ### 📙 予測BSの作成方法
+
+                    この貸借対照表（BS）は、**将来のPL予測に基づいて拡張**されたものです。
+
+                    #### 🧮 各項目の予測方法
+
+                    - **現金・預金**：残差として調整（他項目との差額）
+                    - **有価証券**：一定と仮定
+                    - **売上債権 / 棚卸資産**：売上高比率の5年平均を適用
+                    - **有形固定資産 / 無形固定資産**：売上高成長率 × 各係数で増加
+                    - **その他固定資産**：一定と仮定
+                    - **資産合計**：上記項目の合計
+
+                    - **短期有利子負債 / 長期有利子負債**：一定と仮定
+                    - **仕入債務 / その他流動負債**：売上高比率の5年平均を適用
+                    - **繰延収益 / その他固定負債**：一定
+                    - **負債合計**：上記の合計
+
+                    - **資本金**：変動なし
+                    - **自己株式**：過去5年の自社株買い比率の平均から計算
+                    - **資本剰余金**：過去5年の配当性向の平均から計算
+                    - **その他包括利益累計額**：0と仮定
+
+                        """)
+
                     st.subheader("📄 予測CF（キャッシュフロー計算書）")
                     st.dataframe(to_dataframe(extended_cf_list).round(0).T)
+
+                    with st.expander("📗 キャッシュフロー計算書の詳細（予測ロジック）"):
+                        st.markdown("""
+                    ### 📗 予測CFの作成方法
+
+                    このキャッシュフロー計算書（CF）は、**将来予測されたPL・BS・NOPAT・NWC** に基づいて構成されています。
+
+                    #### 🧮 各項目の算出方法
+
+                    - **NOPAT（税引後営業利益）**：PLに基づいて計算
+                    - **減価償却費**：PL上の減価償却費をそのまま使用
+                    - **正味運転資本の増減（ΔNWC）**：当年と前年のNWCの差分
+                    - **営業活動によるCF**：NOPAT + 減価償却費 - ΔNWC
+                    - **投資活動によるCF**：有形固定資産・無形固定資産の増減
+                    - **FCF（フリーキャッシュフロー）**：営業CF + 投資CF
+
+                        """)
 
     with tab_dcf:
         st.header("💰 DCF分析結果（シナリオ比較）")
@@ -249,25 +323,35 @@ if selected_ticker:
                 cf_list = st.session_state[cf_key]
 
                 # 入力
-                input_risk_free_rate = st.number_input(
+                rfr = st.number_input(
                     "無リスク利子率（%）", 0.0, 10.0, 4.0, 0.1, key=f"rfr_{idx}"
                 ) / 100
-                input_market_risk_premium = st.number_input(
+                mrp = st.number_input(
                     "市場リスクプレミアム（%）", 0.0, 10.0, 5.5, 0.1, key=f"mrp_{idx}"
                 ) / 100
                 growth = st.number_input(
                     "永久成長率（%）", value=2.0, step=0.1, key=f"growth_{idx}"
                 ) / 100
 
-                market_data = reconstruct_market_data(
-                    market_data_raw,
-                    risk_free_rate=input_risk_free_rate,
-                    market_risk_premium=input_market_risk_premium
-                )
+                market_key = (rfr, mrp)
+                if "market_data_cache" not in st.session_state:
+                    st.session_state.market_data_cache = {}
+                if market_key in st.session_state.market_data_cache:
+                    market_data = st.session_state.market_data_cache[market_key]
+                else:
+                    market_data = reconstruct_market_data(market_data_raw, risk_free_rate=rfr, market_risk_premium=mrp)
+                    st.session_state.market_data_cache[market_key] = market_data
 
-                cost_of_equity = compute_cost_of_equity(market_data)
-                cost_of_debt = compute_cost_of_debt_from_pl_bs(pl_list, bs_list)
-                wacc = compute_wacc(cost_of_equity, cost_of_debt, bs_list, nopat_list)
+                cost_key = (st.session_state.ticker_cache, rfr, mrp)
+                if "cost_cache" not in st.session_state:
+                    st.session_state.cost_cache = {}
+                if cost_key in st.session_state.cost_cache:
+                    ce, cd, wacc = st.session_state.cost_cache[cost_key]
+                else:
+                    ce = compute_cost_of_equity(market_data)
+                    cd = compute_cost_of_debt_from_pl_bs(pl_list, bs_list)
+                    wacc = compute_wacc(ce, cd, bs_list, nopat_list)
+                    st.session_state.cost_cache[cost_key] = (ce, cd, wacc)
 
                 input_wacc = st.number_input(
                     "加重平均資本コスト（WACC, %）", 
@@ -275,6 +359,9 @@ if selected_ticker:
                     step=0.1, 
                     key=f"wacc_{idx}"
                 ) / 100
+
+                if abs(input_wacc - wacc) > 1e-6:
+                    cd = infer_cost_of_debt_from_wacc(input_wacc, ce, bs_list, nopat_list)
 
                 enterprise_value = compute_dcf_valuation(cf_list, input_wacc, growth)
                 result = compute_fair_share_price_from_bs(enterprise_value, bs_list, market_data)
@@ -292,104 +379,30 @@ if selected_ticker:
 
                 # メトリクス表示
                 st.metric("企業価値", f"${result['enterprise_value']:,.0f}")
+                st.metric("ネットデット", f"${result['net_debt']:,.0f}")
+                st.metric("株主価値", f"${result['equity_value']:,.0f}")
+                st.metric("発行済み株式数", f"{result['shares_outstanding']:,.0f}")
                 st.metric("理論株価", f"${result['fair_share_price']:.2f} USD")
                 st.metric("現在株価", f"${result['current_market_price']:.2f} USD")
 
                 with st.expander("詳細"):
-                    st.write("**株主資本コスト:**", f"{cost_of_equity:.2%}")
-                    st.write("**負債コスト:**", f"{cost_of_debt:.2%}")
+                    st.write("**株主資本コスト:**", f"{ce:.2%}")
+                    st.write("**負債コスト:**", f"{cd:.2%}")
                     st.write("**WACC:**", f"{input_wacc:.2%}")
                     st.write("**β:**", f"{market_data['beta']:.2f}")
                     st.write("**無リスク利子率:**", f"{market_data['risk_free_rate']:.2%}")
                     st.write("**市場リスクプレミアム:**", f"{market_data['market_risk_premium']:.2%}")
-
-        # ===== 棒グラフで比較 =====
-        st.subheader("📊 シナリオ別：企業価値 & 理論株価 比較")
-
+        
         # 有効なシナリオのみ集計
         valid_results = [res for res in summary_results if res is not None]
 
-        sns.set_theme(style="whitegrid")
+        # 棒グラフで比較
+        st.subheader("📊 シナリオ別：企業価値 & 理論株価 比較")
 
-        if valid_results:
-            labels = [res["scenario"] for res in valid_results]
-            enterprise_values = [res["enterprise_value"] / 1e9 for res in valid_results]
-            fair_prices = [res["fair_share_price"] for res in valid_results]
-            market_prices = [res["current_market_price"] for res in valid_results]
+        plot_dcf_comparison_charts(valid_results)
 
-            df_ev = pd.DataFrame({
-                "Scenario": labels,
-                "Enterprise Value (B USD)": enterprise_values
-            })
-
-            fig1, ax1 = plt.subplots(figsize=(10, 5))
-            sns.barplot(x="Scenario", y="Enterprise Value (B USD)", data=df_ev, ax=ax1, palette="Blues_d")
-            ax1.set_title("Enterprise Value by Scenario", fontsize=14)
-            ax1.set_ylabel("Enterprise Value (Billion USD)", fontsize=12)
-            ax1.set_xlabel("")
-            ax1.tick_params(axis='x', rotation=15)
-            st.pyplot(fig1)
-
-            df_prices = pd.DataFrame({
-                "Scenario": labels * 2,
-                "Price (USD)": fair_prices + market_prices,
-                "Type": ["Fair Value"] * len(labels) + ["Market Price"] * len(labels)
-            })
-
-            fig2, ax2 = plt.subplots(figsize=(10, 5))
-            sns.barplot(
-                data=df_prices,
-                x="Scenario",
-                y="Price (USD)",
-                hue="Type",
-                palette="Set2",
-                ax=ax2
-            )
-            ax2.set_title("Fair Value vs Market Price per Share", fontsize=14)
-            ax2.set_ylabel("Price (USD)", fontsize=12)
-            ax2.set_xlabel("")
-            ax2.tick_params(axis='x', rotation=15)
-            ax2.legend(title="")
-            st.pyplot(fig2)
-
-        else:
-            st.info("Insufficient scenario results. Comparison charts are not available.")
-
-        # ===== Sensitivity Heatmaps =====
+        # 感応度分析
         st.subheader("📈 シナリオ別 感応度分析（WACC × 永久成長率）")
 
-        for res in valid_results:
-            st.markdown(f"#### {res['scenario']}")
+        plot_dcf_sensitivity_heatmaps(valid_results)
 
-            with st.spinner("Running sensitivity analysis..."):
-                matrix, wacc_list, g_list = sensitivity_analysis_dcf(
-                    cf_list=res["cf_list"],
-                    base_wacc=res["wacc"],
-                    base_growth=res["growth"],
-                    wacc_range=(-0.01, 0.01),
-                    growth_range=(-0.005, 0.005),
-                    wacc_steps=5,
-                    growth_steps=5
-                )
-
-            heatmap_df = pd.DataFrame(
-                matrix / 1e9,
-                index=[f"{w*100:.2f}%" for w in wacc_list],
-                columns=[f"{g*100:.2f}%" for g in g_list]
-            )
-
-            fig, ax = plt.subplots(figsize=(9, 6))
-            sns.heatmap(
-                heatmap_df,
-                annot=True,
-                fmt=".1f",
-                cmap="YlGnBu",
-                ax=ax,
-                annot_kws={"size": 10},
-                linewidths=0.5,
-                cbar_kws={'label': 'Enterprise Value (B USD)'}
-            )
-            ax.set_xlabel("Perpetual Growth Rate (g)", fontsize=12)
-            ax.set_ylabel("WACC", fontsize=12)
-            ax.set_title(f"Sensitivity Heatmap: {res['scenario']}", fontsize=14)
-            st.pyplot(fig)

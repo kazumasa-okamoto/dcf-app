@@ -29,7 +29,7 @@ def compute_cost_of_debt_from_pl_bs(pl_list, bs_list, years=5):
         years (int): 集計対象の年数（デフォルトは5年）
 
     Returns:
-        float: 負債コスト（小数表記、例：0.045）
+        float: 負債コスト（小数、例：0.045）
     """
     # 両リストの長さに基づいて対象期間を決定
     n = min(len(pl_list), len(bs_list), years)
@@ -104,4 +104,52 @@ def compute_wacc(cost_of_equity, cost_of_debt, bs_list, nopat_list, years=5):
         (debt / total_capital) * cost_of_debt * (1 - avg_tax_rate)
     )
     return wacc
+
+
+def infer_cost_of_debt_from_wacc(wacc, cost_of_equity, bs_list, nopat_list, years=5):
+    """
+    与えられたWACCと株主資本コストから負債コストを逆算する。
+
+    Parameters:
+        wacc (float): 加重平均資本コスト（小数、例：0.08）
+        cost_of_equity (float): 株主資本コスト（小数、例：0.10）
+        bs_list (List[dict]): 整形済みバランスシートデータ（昇順ソート）
+        nopat_list (List[dict]): NOPATデータ（昇順ソート）
+        years (int): 実効税率の平均に使う年数（デフォルト5）
+
+    Returns:
+        float: 負債コスト（小数、例：0.038）
+    """
+    latest_bs = bs_list[-1]
+    equity = latest_bs.get("total_equity", 0.0)
+    short_term_debt = latest_bs.get("short_term_debt", 0.0)
+    long_term_debt = latest_bs.get("long_term_debt", 0.0)
+    debt = short_term_debt + long_term_debt
+
+    if equity + debt == 0:
+        raise ValueError("資本構成の合計がゼロです")
+
+    total_capital = equity + debt
+    equity_weight = equity / total_capital
+    debt_weight = debt / total_capital
+
+    # 実効税率の平均
+    valid_tax_rates = [
+        x["effective_tax_rate"]
+        for x in nopat_list[-years:]
+        if x.get("effective_tax_rate") is not None and x["effective_tax_rate"] >= 0
+    ]
+    if not valid_tax_rates:
+        raise ValueError("有効な実効税率データがありません")
+    avg_tax_rate = sum(valid_tax_rates) / len(valid_tax_rates)
+
+    # 負債コストの逆算
+    numerator = wacc - (equity_weight * cost_of_equity)
+    denominator = debt_weight * (1 - avg_tax_rate)
+
+    if denominator == 0:
+        raise ZeroDivisionError("負債比率または税率によって除算が不可能です")
+
+    cost_of_debt = numerator / denominator
+    return cost_of_debt
 
